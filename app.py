@@ -1,18 +1,24 @@
+
 import os
 import hashlib
 import ipaddress
 from urllib.parse import urlsplit
 
 import redis
-from flask import Flask, request, jsonify
+import requests
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
 app.config["DEBUG"] = False
 
-TRUSTED_X_FOR_COUNT = max(0, int(os.getenv("TRUSTED_X_FOR_COUNT", "0")))
-TRUSTED_X_PROTO_COUNT = max(0, int(os.getenv("TRUSTED_X_PROTO_COUNT", "0")))
+TRUSTED_X_FOR_COUNT = max(
+    0, int(os.getenv("TRUSTED_X_FOR_COUNT", "0"))
+)
+TRUSTED_X_PROTO_COUNT = max(
+    0, int(os.getenv("TRUSTED_X_PROTO_COUNT", "0"))
+)
 
 app.wsgi_app = ProxyFix(
     app.wsgi_app,
@@ -20,7 +26,28 @@ app.wsgi_app = ProxyFix(
     x_proto=TRUSTED_X_PROTO_COUNT
 )
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+BACKEND_URL = os.getenv(
+    "BACKEND_URL", "http://127.0.0.1:5001"
+).rstrip("/")
+
+parsed_backend = urlsplit(BACKEND_URL)
+
+if (
+    parsed_backend.scheme not in {"http", "https"}
+    or not parsed_backend.netloc
+    or parsed_backend.username is not None
+    or parsed_backend.password is not None
+    or parsed_backend.path not in {"", "/"}
+    or parsed_backend.query
+    or parsed_backend.fragment
+):
+    raise RuntimeError(
+        "BACKEND_URL phải là địa chỉ gốc hợp lệ của backend."
+    )
+
+REDIS_URL = os.getenv(
+    "REDIS_URL", "redis://localhost:6379/0"
+)
 
 redis_client = redis.Redis.from_url(
     REDIS_URL,
@@ -33,18 +60,41 @@ redis_client = redis.Redis.from_url(
 
 MAX_REQUESTS = max(1, int(os.getenv("MAX_REQUESTS", "5")))
 TIME_WINDOW = max(1, int(os.getenv("TIME_WINDOW", "10")))
+PORT = int(os.getenv("PORT", "8081"))
 
-SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-STATE_CHANGING_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+API_METHODS = [
+    "GET", "HEAD", "POST", "PUT", "PATCH",
+    "DELETE", "OPTIONS"
+]
+
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailers",
+    "transfer-encoding",
+    "upgrade"
+}
+
+RESPONSE_EXCLUDED_HEADERS = HOP_BY_HOP_HEADERS | {
+    "content-length",
+    "content-encoding",
+    "access-control-allow-origin",
+    "access-control-allow-methods",
+    "access-control-allow-headers",
+    "access-control-allow-credentials",
+    "access-control-expose-headers",
+    "access-control-max-age"
+}
 
 
-def normalize_origin(value, allow_path=False):
+def normalize_origin(value):
     try:
         parsed = urlsplit(value.strip())
 
-        scheme = parsed.scheme.lower()
-
-        if scheme not in {"http", "https"}:
+        if parsed.scheme.lower() not in {"http", "https"}:
             return None
 
         if not parsed.hostname:
@@ -53,11 +103,10 @@ def normalize_origin(value, allow_path=False):
         if parsed.username is not None or parsed.password is not None:
             return None
 
-        if not allow_path and (
-            parsed.path or parsed.query or parsed.fragment
-        ):
+        if parsed.path or parsed.query or parsed.fragment:
             return None
 
+        scheme = parsed.scheme.lower()
         hostname = parsed.hostname.lower()
         port = parsed.port
 
@@ -69,7 +118,10 @@ def normalize_origin(value, allow_path=False):
         ):
             port = None
 
-        authority = hostname if port is None else f"{hostname}:{port}"
+        authority = (
+            hostname if port is None
+            else f"{hostname}:{port}"
+        )
 
         return f"{scheme}://{authority}"
 
@@ -78,28 +130,31 @@ def normalize_origin(value, allow_path=False):
 
 
 ALLOWED_ORIGINS = {
-    origin
-    for origin in (
-        normalize_origin(item.strip())
-        for item in os.getenv(
-            "ALLOWED_ORIGINS",
-            "http://localhost:8080"
-        ).split(",")
-        if item.strip()
-    )
-    if origin
+    normalized
+    for item in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:8080"
+    ).split(",")
+    if (normalized := normalize_origin(item)) is not None
 }
 
 if not ALLOWED_ORIGINS:
-    raise RuntimeError("ALLOWED_ORIGINS chưa được cấu hình hợp lệ.")
+    raise RuntimeError(
+        "ALLOWED_ORIGINS chưa được cấu hình hợp lệ."
+    )
 
 CORS(
     app,
     resources={
-        r"/api/*": {
+        r"/api/.*": {
             "origins": list(ALLOWED_ORIGINS),
-            "methods": ["GET", "POST", "OPTIONS"],
-            "allow_headers": ["Content-Type"]
+            "methods": API_METHODS,
+            "allow_headers": [
+                "Content-Type",
+                "Authorization",
+                "Idempotency-Key",
+                "Accept"
+            ],
+            "expose_headers": ["Retry-After"]
         }
     }
 )
@@ -119,6 +174,12 @@ RATE_LIMIT_SCRIPT = redis_client.register_script(
 )
 
 
+def hash_ip(client_ip):
+    return hashlib.sha256(
+        client_ip.encode("utf-8")
+    ).hexdigest()
+
+
 def get_client_ip():
     remote_addr = request.remote_addr
 
@@ -131,34 +192,8 @@ def get_client_ip():
         return None
 
 
-def is_valid_request_origin():
-    origin = request.headers.get("Origin")
-
-    if origin is not None:
-        normalized_origin = normalize_origin(origin)
-    else:
-        referer = request.headers.get("Referer")
-
-        if not referer:
-            return False
-
-        normalized_origin = normalize_origin(
-            referer,
-            allow_path=True
-        )
-
-    return (
-        normalized_origin is not None
-        and normalized_origin in ALLOWED_ORIGINS
-    )
-
-
 def apply_rate_limit(client_ip):
-    ip_hash = hashlib.sha256(
-        client_ip.encode("utf-8")
-    ).hexdigest()
-
-    redis_key = f"rate_limit:ip:{ip_hash}"
+    redis_key = f"rate_limit:ip:{hash_ip(client_ip)}"
 
     result = RATE_LIMIT_SCRIPT(
         keys=[redis_key],
@@ -186,6 +221,18 @@ def apply_rate_limit(client_ip):
 
 @app.before_request
 def security_middleware():
+    if request.path == "/healthz":
+        return None
+
+    if request.method == "OPTIONS":
+        return Response(status=204)
+
+    if not (
+        request.path == "/api"
+        or request.path.startswith("/api/")
+    ):
+        return None
+
     client_ip = get_client_ip()
 
     if client_ip is None:
@@ -194,7 +241,9 @@ def security_middleware():
         }), 400
 
     try:
-        if redis_client.sismember("blacklist_ips", client_ip):
+        if redis_client.sismember(
+            "blacklist_ips", hash_ip(client_ip)
+        ):
             return jsonify({
                 "error": "Truy cập bị từ chối."
             }), 403
@@ -214,15 +263,116 @@ def security_middleware():
             "error": "Dịch vụ bảo vệ hiện không khả dụng."
         }), 503
 
-    if (
-        request.method in STATE_CHANGING_METHODS
-        and not is_valid_request_origin()
-    ):
-        return jsonify({
-            "error": "Nguồn gốc request không hợp lệ."
-        }), 403
-
     return None
+
+
+@app.route("/healthz", methods=["GET"])
+def health_check():
+    try:
+        redis_client.ping()
+
+        return jsonify({
+            "status": "ok",
+            "redis": "connected"
+        }), 200
+
+    except redis.RedisError:
+        return jsonify({
+            "status": "degraded",
+            "redis": "unavailable"
+        }), 503
+
+
+def forward_to_backend():
+    upstream_url = f"{BACKEND_URL}{request.path}"
+
+    if request.query_string:
+        try:
+            query_string = request.query_string.decode("ascii")
+        except UnicodeDecodeError:
+            return jsonify({
+                "error": "Query string không hợp lệ."
+            }), 400
+
+        upstream_url += f"?{query_string}"
+
+    connection_tokens = {
+        item.strip().lower()
+        for item in request.headers.get(
+            "Connection", ""
+        ).split(",")
+        if item.strip()
+    }
+
+    excluded_request_headers = HOP_BY_HOP_HEADERS | {
+        "host",
+        "content-length",
+        "accept-encoding"
+    } | connection_tokens
+
+    upstream_headers = {
+        name: value
+        for name, value in request.headers.items()
+        if name.lower() not in excluded_request_headers
+        and not name.lower().startswith("x-forwarded-")
+    }
+
+    client_ip = get_client_ip()
+
+    upstream_headers["X-Forwarded-For"] = (
+        client_ip if client_ip else ""
+    )
+    upstream_headers["X-Forwarded-Proto"] = (
+        "https" if request.is_secure else "http"
+    )
+
+    try:
+        upstream_response = requests.request(
+            method=request.method,
+            url=upstream_url,
+            headers=upstream_headers,
+            data=request.get_data(),
+            timeout=(3, 15),
+            allow_redirects=False
+        )
+
+    except requests.Timeout:
+        app.logger.warning(
+            "Backend timeout. Path=%s",
+            request.path
+        )
+
+        return jsonify({
+            "error": "Backend không phản hồi kịp thời."
+        }), 504
+
+    except requests.RequestException as exc:
+        app.logger.error(
+            "Backend connection failed: %s",
+            type(exc).__name__
+        )
+
+        return jsonify({
+            "error": "Không thể kết nối tới backend."
+        }), 502
+
+    response = Response(
+        upstream_response.content,
+        status=upstream_response.status_code
+    )
+
+    for name, value in upstream_response.headers.items():
+        if name.lower() not in RESPONSE_EXCLUDED_HEADERS:
+            response.headers[name] = value
+
+    return response
+
+
+@app.route("/api", defaults={"path": ""}, methods=API_METHODS)
+@app.route("/api/", defaults={"path": ""}, methods=API_METHODS)
+@app.route("/api/<path:path>", methods=API_METHODS)
+def proxy_api(path):
+    return forward_to_backend()
 
 
 @app.after_request
@@ -255,17 +405,10 @@ def add_security_headers(response):
     return response
 
 
-@app.route("/api/data", methods=["GET"])
-def get_data():
-    return jsonify({
-        "message": "Lấy dữ liệu thành công! Request hợp lệ."
-    }), 200
-
-
 if __name__ == "__main__":
     app.run(
         host="127.0.0.1",
-        port=int(os.getenv("PORT", "5000")),
+        port=PORT,
         debug=False,
         use_reloader=False
     )

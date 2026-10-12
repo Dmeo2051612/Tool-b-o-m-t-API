@@ -1,27 +1,32 @@
 # Flask Security Middleware
 
-Project học tập về middleware bảo mật cho API sử dụng Flask, Redis và Werkzeug. Mục tiêu là thực hành các lớp kiểm soát request cơ bản và hiểu giới hạn của chúng.
+Project học tập về middleware bảo mật cho API, xây dựng bằng Flask, Redis và Werkzeug. Dự án minh họa cách kiểm soát request trước khi chuyển tiếp đến backend, đồng thời giúp tìm hiểu giới hạn của các biện pháp bảo vệ ở tầng ứng dụng.
 
-## Chức năng hiện có
+> **Lưu ý:** Đây là project học tập và kiểm thử, chưa phải API Gateway hoàn chỉnh hoặc giải pháp bảo mật có thể tự thân bảo vệ hệ thống tài chính trong môi trường production.
 
-- **ProxyFix:** đọc thông tin IP và giao thức từ header proxy khi được cấu hình số proxy tin cậy chính xác.
-- **Rate Limiting:** giới hạn mặc định 5 request trong 10 giây theo IP client; bộ đếm được lưu trong Redis.
-- **Atomic counter và TTL:** Lua script gom thao tác tăng bộ đếm và thiết lập TTL trong Redis.
-- **IP Blacklist:** từ chối IP có trong Redis Set `blacklist_ips`.
-- **CORS:** chỉ cho phép origin được cấu hình truy cập tài nguyên `/api/*`.
-- **Kiểm tra Origin/Referer:** từ chối request thay đổi trạng thái nếu nguồn gốc không hợp lệ hoặc bị thiếu.
-- **Security Headers:** thêm các header như `X-Content-Type-Options`, `X-Frame-Options`, CSP, `Referrer-Policy`, `Permissions-Policy` và `Cache-Control`; HSTS chỉ được thêm khi request được nhận diện là HTTPS.
+## Tính năng
+
+- **ProxyFix:** Hỗ trợ đọc IP và giao thức từ header chuyển tiếp khi cấu hình đúng số lượng proxy đáng tin cậy.
+- **Rate Limiting:** Mặc định cho phép tối đa 5 request trong cửa sổ 10 giây theo IP client.
+- **Bộ đếm nguyên tử trong Redis:** Lua script kết hợp tăng bộ đếm và thiết lập TTL để giảm nguy cơ sai lệch khi nhiều request đến đồng thời.
+- **IP Blacklist:** Từ chối request có IP nằm trong Redis Set `blacklist_ips`. Giá trị được lưu trong Set là SHA-256 của IP.
+- **CORS:** Chỉ cho phép các origin được cấu hình truy cập tài nguyên `/api/`.
+- **API Reverse Proxy:** Chuyển tiếp request `/api/...` đến backend được cấu hình bằng `BACKEND_URL`.
+- **Security Headers:** Thêm `X-Content-Type-Options`, `X-Frame-Options`, `Content-Security-Policy`, `Referrer-Policy`, `Permissions-Policy` và `Cache-Control`. Header HSTS chỉ được thêm khi request được nhận diện là HTTPS.
+- **Health Check:** Endpoint `/healthz` kiểm tra trạng thái kết nối Redis.
+- **Fail-Closed:** Khi Redis gặp lỗi trong quá trình kiểm tra bảo vệ API, request nhận HTTP `503 Service Unavailable`.
 
 ## Công nghệ
 
-- Python 3.10 trở lên
+- Python 3.10+
 - Flask 3.1.3
 - Flask-Cors 6.0.5
-- Redis server
-- redis-py 8.1.0
 - Werkzeug 3.1.9
+- redis-py 8.1.0
+- Requests
+- Redis Server
 
-## Cấu trúc tối thiểu
+## Cấu trúc dự án
 
 ```text
 project/
@@ -30,13 +35,13 @@ project/
 └── README.md
 ```
 
-Lưu mã Flask hiện tại vào `app.py`. Nếu file có tên khác, thay `app.py` trong các lệnh chạy bên dưới bằng tên module tương ứng.
+Nếu file Python hiện tại có tên khác, hãy thay `app.py` trong các lệnh chạy bằng tên module tương ứng.
 
 ## Cài đặt trên Windows
 
 ### 1. Tạo môi trường Python
 
-Mở PowerShell tại thư mục project:
+Mở PowerShell tại thư mục dự án:
 
 ```powershell
 py -3.12 -m venv .venv
@@ -45,108 +50,209 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Nếu PowerShell không cho phép kích hoạt môi trường ảo, có thể gọi trực tiếp `\.venv\Scripts\python.exe` thay vì thay đổi chính sách thực thi toàn máy.
+Nếu PowerShell không cho phép kích hoạt môi trường ảo, có thể gọi trực tiếp `.\.venv\Scripts\python.exe` thay vì thay đổi chính sách thực thi trên toàn máy.
 
 ### 2. Khởi động Redis
 
-Nếu đã cài Redis, hãy đảm bảo Redis đang chạy tại `localhost:6379`.
+Ứng dụng mặc định kết nối Redis tại `localhost:6379`, database `0`.
 
-Hoặc sử dụng Docker Desktop:
+Nếu đã cài Redis Server, hãy khởi động dịch vụ và kiểm tra kết nối:
+
+```powershell
+redis-cli ping
+```
+
+Kết quả mong đợi:
+
+```text
+PONG
+```
+
+Hoặc nếu đã cài Docker Desktop, có thể chạy Redis bằng container:
 
 ```powershell
 docker run --name flask-security-redis -p 127.0.0.1:6379:6379 -d redis:8
 docker exec flask-security-redis redis-cli ping
 ```
 
-Kết quả kiểm tra mong đợi là `PONG`. Nếu container đã tồn tại, dùng `docker start flask-security-redis` thay vì tạo lại.
+Nếu container `flask-security-redis` đã tồn tại, dùng:
 
-### 3. Cấu hình môi trường
+```powershell
+docker start flask-security-redis
+docker exec flask-security-redis redis-cli ping
+```
 
-Chạy trong cùng cửa sổ PowerShell sẽ khởi động ứng dụng:
+Docker là một cách chạy Redis, không phải yêu cầu bắt buộc nếu máy đã có Redis Server đang hoạt động.
+
+### 3. Cấu hình biến môi trường
+
+Các biến dưới đây chỉ có hiệu lực trong cửa sổ PowerShell hiện tại:
 
 ```powershell
 $env:REDIS_URL = "redis://localhost:6379/0"
+$env:BACKEND_URL = "http://127.0.0.1:5001"
 $env:ALLOWED_ORIGINS = "http://localhost:8080"
 $env:MAX_REQUESTS = "5"
 $env:TIME_WINDOW = "10"
 $env:TRUSTED_X_FOR_COUNT = "0"
 $env:TRUSTED_X_PROTO_COUNT = "0"
-$env:PORT = "5000"
+$env:PORT = "8081"
 ```
 
-`ALLOWED_ORIGINS` nhận danh sách origin phân tách bằng dấu phẩy, ví dụ `http://localhost:8080,https://example.com`. Chỉ khai báo những origin bạn thực sự tin cậy.
+Ý nghĩa:
 
-Ở môi trường local không có reverse proxy, giữ `TRUSTED_X_FOR_COUNT=0` và `TRUSTED_X_PROTO_COUNT=0`. Chỉ đặt giá trị lớn hơn 0 khi ứng dụng nằm sau proxy đáng tin cậy đã được cấu hình để ghi đè/chuẩn hóa các header chuyển tiếp. Không mở cổng ứng dụng trực tiếp ra Internet khi đang tin header do proxy chuyển tiếp.
+| Biến | Ý nghĩa | Mặc định |
+|---|---|---|
+| `REDIS_URL` | Địa chỉ kết nối Redis | `redis://localhost:6379/0` |
+| `BACKEND_URL` | Địa chỉ gốc của backend nhận request được chuyển tiếp | `http://127.0.0.1:5001` |
+| `ALLOWED_ORIGINS` | Danh sách origin được CORS cho phép, phân tách bằng dấu phẩy | `http://localhost:8080` |
+| `MAX_REQUESTS` | Số request tối đa trong một cửa sổ | `5` |
+| `TIME_WINDOW` | Độ dài cửa sổ rate limit, tính bằng giây | `10` |
+| `TRUSTED_X_FOR_COUNT` | Số proxy đáng tin cậy dùng để xử lý `X-Forwarded-For` | `0` |
+| `TRUSTED_X_PROTO_COUNT` | Số proxy đáng tin cậy dùng để xử lý `X-Forwarded-Proto` | `0` |
+| `PORT` | Cổng chạy Flask | `8081` |
 
-Không đưa mật khẩu Redis hoặc thông tin bí mật vào Git. Nếu Redis có mật khẩu, hãy đặt thông tin kết nối trong biến `REDIS_URL` của môi trường triển khai.
+`ALLOWED_ORIGINS` có thể nhận nhiều origin, ví dụ:
+
+```powershell
+$env:ALLOWED_ORIGINS = "http://localhost:8080,https://example.com"
+```
+
+Chỉ khai báo những origin thực sự được tin cậy. Origin bao gồm scheme, hostname và cổng nếu có; không thêm đường dẫn như `/api`.
+
+`BACKEND_URL` phải là địa chỉ gốc hợp lệ của backend, không chứa đường dẫn, query string hoặc fragment. Backend phải đang chạy và có endpoint tương ứng nếu muốn kiểm thử việc chuyển tiếp request.
+
+Ở môi trường local không có reverse proxy, giữ hai biến `TRUSTED_X_*_COUNT` bằng `0`. Chỉ tăng giá trị khi triển khai sau proxy đáng tin cậy đã được cấu hình để chuẩn hóa header chuyển tiếp. Không tin tưởng header do client tùy ý gửi.
+
+Không commit mật khẩu Redis, token hoặc thông tin bí mật vào Git. Nếu Redis yêu cầu xác thực, cấu hình thông tin kết nối qua `REDIS_URL` của môi trường triển khai.
 
 ### 4. Chạy ứng dụng
+
+Đảm bảo Redis đang chạy, sau đó thực hiện:
 
 ```powershell
 python app.py
 ```
 
-Ứng dụng chạy tại `http://127.0.0.1:5000` theo cấu hình mặc định.
+Theo cấu hình mặc định, Flask lắng nghe tại:
 
-## API mẫu
-
-### `GET /api/data`
-
-```powershell
-curl.exe -i http://127.0.0.1:5000/api/data
+```text
+http://127.0.0.1:8081
 ```
 
-Request thành công trả về JSON tương tự:
+Ứng dụng hiện bind vào `127.0.0.1`, phù hợp cho kiểm thử trên máy local.
+
+## Kiểm thử API
+
+### 1. Kiểm tra sức khỏe
+
+```powershell
+curl.exe -i http://127.0.0.1:8081/healthz
+```
+
+Khi Redis kết nối thành công, endpoint trả HTTP `200` với JSON tương tự:
 
 ```json
 {
-  "message": "Lấy dữ liệu thành công! Request hợp lệ."
+  "status": "ok",
+  "redis": "connected"
 }
 ```
 
-### Kiểm tra Rate Limiting
+Nếu Redis không khả dụng, endpoint trả HTTP `503` và trạng thái `degraded`.
 
-Mặc định, mỗi IP được phép 5 request trong một cửa sổ 10 giây. Gửi 6 request liên tiếp:
+### 2. Gửi request đến API proxy
+
+```powershell
+curl.exe -i http://127.0.0.1:8081/api/data
+```
+
+Request sẽ được kiểm tra qua middleware, sau đó chuyển tiếp đến:
+
+```text
+http://127.0.0.1:5001/api/data
+```
+
+Backend tại `BACKEND_URL` cần đang chạy và cung cấp endpoint tương ứng. Nếu không kết nối được backend, proxy trả HTTP `502`; nếu backend hết thời gian phản hồi, proxy trả HTTP `504`.
+
+### 3. Kiểm tra Rate Limiting
+
+Mặc định, mỗi IP được phép tối đa 5 request trong cửa sổ 10 giây. Có thể gửi 6 request liên tiếp:
 
 ```powershell
 1..6 | ForEach-Object {
-    curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:5000/api/data
+    curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8081/api/data
 }
 ```
 
-Sau khi vượt giới hạn, request sẽ nhận HTTP `429`. Chờ TTL hết hạn rồi thử lại.
+Khi vượt giới hạn, middleware trả HTTP `429 Too Many Requests` và header `Retry-After`. Các request vẫn cần đi qua bước kiểm tra Redis trước khi được chuyển tiếp.
 
-### Thêm hoặc gỡ IP khỏi blacklist
+Kết quả kiểm thử còn phụ thuộc backend đang chạy và trạng thái bộ đếm hiện có. Chờ hết cửa sổ TTL hoặc xóa key kiểm thử phù hợp trước khi chạy lại.
 
-Thêm IP vào blacklist:
+### 4. Thêm IP vào blacklist
 
-```powershell
-docker exec flask-security-redis redis-cli SADD blacklist_ips 127.0.0.1
-```
+Code lưu SHA-256 của IP trong Redis Set `blacklist_ips`, vì vậy không thể thêm IP dạng rõ trực tiếp bằng `SADD blacklist_ips 127.0.0.1`.
 
-Gỡ IP khỏi blacklist:
+Có thể tạo giá trị hash bằng Python:
 
 ```powershell
-docker exec flask-security-redis redis-cli SREM blacklist_ips 127.0.0.1
+python -c "import hashlib; print(hashlib.sha256(b'127.0.0.1').hexdigest())"
 ```
 
-Các lệnh trên áp dụng khi dùng container Redis có tên `flask-security-redis`. Nếu đang chạy Redis theo cách khác, dùng công cụ Redis tương ứng. Blacklist hiện lưu địa chỉ IP gốc, không phải giá trị hash.
+Dùng chuỗi hash trả về ở lệnh sau:
 
-## Hành vi khi Redis không khả dụng
+```powershell
+redis-cli SADD blacklist_ips "<SHA256_HASH>"
+```
 
-Middleware hiện dùng chính sách **Fail-Closed**: nếu lệnh Redis phát sinh lỗi, request nhận HTTP `503 Service Unavailable`. Code hiện tại chưa có Circuit Breaker, bản sao Redis, hoặc cơ chế fallback trong RAM.
+Gỡ IP khỏi blacklist bằng chính chuỗi hash đó:
 
-## Giới hạn và phạm vi sử dụng
+```powershell
+redis-cli SREM blacklist_ips "<SHA256_HASH>"
+```
 
-Đây là middleware mẫu phục vụ học tập và kiểm thử, **chưa phải API Gateway hoàn chỉnh và chưa đủ điều kiện tự thân để triển khai làm lớp bảo vệ cho ứng dụng tài chính**.
+Nếu Redis chạy trong Docker, có thể dùng `docker exec flask-security-redis redis-cli ...` thay cho `redis-cli` trực tiếp trên máy.
 
-- Ứng dụng chỉ có endpoint minh họa `GET /api/data`; chưa chuyển tiếp request đến backend khác.
-- Chưa triển khai Authentication/Authorization, JWT, quản lý user ID hay giới hạn request theo danh tính người dùng. Rate Limit hiện chỉ dựa trên IP.
-- SHA-256 được dùng để tạo key Rate Limit, nhưng điều đó không tự động bảo đảm tuân thủ GDPR hoặc làm dữ liệu IP hoàn toàn ẩn danh. Blacklist vẫn chứa IP dạng rõ.
-- WAF bên ngoài như Cloudflare hoặc ModSecurity chưa được cấu hình trong project này.
-- Kiểm tra Origin/Referer không thay thế Authentication, Authorization hoặc toàn bộ biện pháp CSRF cần thiết cho một ứng dụng có phiên đăng nhập.
-- Redis vẫn là thành phần phụ thuộc tập trung; khi Redis lỗi, request bị từ chối với HTTP 503.
-- Rate Limiting theo IP không đủ để ngăn mọi loại DoS/DDoS và không thay thế kiểm soát tài nguyên ở tầng hạ tầng.
-- `python app.py` dùng server phát triển của Flask; không dùng cách chạy này cho production. Khi triển khai, cần WSGI server phù hợp, HTTPS, cấu hình proxy chính xác, giám sát, quản lý secret và kiểm thử bảo mật.
+> Chỉ đưa IP của môi trường kiểm thử vào blacklist. Khi kiểm thử local, nhiều request có thể cùng xuất phát từ `127.0.0.1`.
 
-Với ứng dụng quản lý chi tiêu, nên đặt nghiệp vụ giao dịch, phân quyền và tính nhất quán dữ liệu trong backend chính (ví dụ Spring Boot + SQL Server). Chỉ bổ sung Flask làm gateway nếu có yêu cầu định tuyến và vận hành rõ ràng.
+## Mã trạng thái đáng chú ý
+
+| HTTP | Ý nghĩa |
+|---|---|
+| `200` | Health check thành công hoặc backend trả về thành công |
+| `204` | Request `OPTIONS` được middleware trả lời |
+| `400` | Không xác định được IP client hoặc query string không hợp lệ |
+| `403` | IP nằm trong blacklist |
+| `429` | Vượt giới hạn request |
+| `502` | Không thể kết nối backend |
+| `503` | Redis không khả dụng khi thực hiện kiểm tra bảo vệ, hoặc health check báo trạng thái degraded |
+| `504` | Backend phản hồi quá thời gian cho phép |
+
+Mã HTTP cuối cùng của request được chuyển tiếp có thể là mã do backend trả về.
+
+## Giới hạn và lưu ý bảo mật
+
+- Đây là project học tập, không phải API Gateway hoàn chỉnh đã được kiểm định bảo mật.
+- Rate Limiting hiện dựa trên IP, không dựa trên tài khoản, API key hoặc danh tính người dùng.
+- SHA-256 được dùng để tạo Redis key và nhận diện IP trong blacklist; điều này không tự động bảo đảm dữ liệu đã ẩn danh hoặc đáp ứng GDPR.
+- CORS là chính sách của trình duyệt, không phải cơ chế xác thực client và không ngăn được mọi request trực tiếp đến API.
+- Code hiện tại chưa triển khai Authentication/Authorization, JWT hoặc phân quyền người dùng.
+- Code hiện tại chưa có kiểm tra Origin/Referer cho request thay đổi trạng thái; không nên xem CORS là biện pháp thay thế CSRF.
+- Rate Limiting theo IP không ngăn được mọi hình thức DoS/DDoS và không thay thế các biện pháp bảo vệ ở tầng hạ tầng.
+- Redis là thành phần phụ thuộc tập trung. Khi Redis lỗi, các request API bị từ chối theo chính sách fail-closed.
+- `ProxyFix` chỉ an toàn khi số lượng proxy tin cậy được cấu hình chính xác và ứng dụng không thể bị truy cập theo cách cho phép client giả mạo header chuyển tiếp.
+- `python app.py` sử dụng server phát triển của Flask; không dùng cách chạy này cho production.
+- Khi triển khai thật, cần WSGI server phù hợp, HTTPS, cấu hình proxy chính xác, quản lý secret, giám sát, giới hạn tài nguyên và kiểm thử bảo mật độc lập.
+
+Với ứng dụng quản lý chi tiêu, nên đặt nghiệp vụ giao dịch, xác thực, phân quyền và tính nhất quán dữ liệu trong backend chính (ví dụ Spring Boot + SQL Server). Chỉ bổ sung Flask làm gateway khi có yêu cầu định tuyến và vận hành rõ ràng.
+
+## Hướng phát triển
+
+- Bổ sung kiểm thử tự động cho rate limit, blacklist, timeout và lỗi Redis.
+- Thêm logging và metrics để quan sát số request bị giới hạn hoặc từ chối.
+- Đánh giá chính sách timeout, giới hạn kích thước request và xử lý header khi proxy.
+- Chỉ triển khai Authentication/Authorization hoặc kiểm tra CSRF khi có yêu cầu và thiết kế phù hợp với backend.
+
+## License
+
+Chưa khai báo license. Nếu công khai repository, hãy thêm file `LICENSE` nếu muốn xác định rõ quyền sử dụng và phân phối mã nguồn.
