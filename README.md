@@ -7,7 +7,7 @@ Project học tập về middleware bảo mật cho API, xây dựng bằng Flas
 ## Tính năng
 
 - **ProxyFix:** Hỗ trợ đọc IP và giao thức từ header chuyển tiếp khi cấu hình đúng số lượng proxy đáng tin cậy.
-- **Rate Limiting:** Mặc định cho phép tối đa 5 request trong cửa sổ 10 giây theo IP client.
+- **Rate Limiting:** API thông thường mặc định tối đa 60 request/10 giây theo IP; đăng nhập và đăng ký có quota riêng tối đa 5 request/60 giây cho từng endpoint. Các quota dùng Redis key riêng để tải dashboard không ăn hết quota đăng nhập.
 - **Bộ đếm nguyên tử trong Redis:** Lua script kết hợp tăng bộ đếm và thiết lập TTL để giảm nguy cơ sai lệch khi nhiều request đến đồng thời.
 - **IP Blacklist:** Từ chối request có IP nằm trong Redis Set `blacklist_ips`. Giá trị được lưu trong Set là SHA-256 của IP.
 - **CORS:** Chỉ cho phép các origin được cấu hình truy cập tài nguyên `/api/`.
@@ -92,8 +92,10 @@ Các biến dưới đây chỉ có hiệu lực trong cửa sổ PowerShell hi�
 $env:REDIS_URL = "redis://localhost:6379/0"
 $env:BACKEND_URL = "http://127.0.0.1:5001"
 $env:ALLOWED_ORIGINS = "http://localhost:8080"
-$env:MAX_REQUESTS = "5"
+$env:MAX_REQUESTS = "60"
 $env:TIME_WINDOW = "10"
+$env:AUTH_MAX_REQUESTS = "5"
+$env:AUTH_TIME_WINDOW = "60"
 $env:TRUSTED_X_FOR_COUNT = "0"
 $env:TRUSTED_X_PROTO_COUNT = "0"
 $env:PORT = "8081"
@@ -106,8 +108,10 @@ $env:PORT = "8081"
 | `REDIS_URL` | Địa chỉ kết nối Redis | `redis://localhost:6379/0` |
 | `BACKEND_URL` | Địa chỉ gốc của backend nhận request được chuyển tiếp | `http://127.0.0.1:5001` |
 | `ALLOWED_ORIGINS` | Danh sách origin được CORS cho phép, phân tách bằng dấu phẩy | `http://localhost:8080` |
-| `MAX_REQUESTS` | Số request tối đa trong một cửa sổ | `5` |
-| `TIME_WINDOW` | Độ dài cửa sổ rate limit, tính bằng giây | `10` |
+| `MAX_REQUESTS` | Số request API thông thường tối đa trong cửa sổ | `60` |
+| `TIME_WINDOW` | Độ dài cửa sổ rate limit chung, tính bằng giây | `10` |
+| `AUTH_MAX_REQUESTS` | Số request tối đa cho từng endpoint đăng nhập/đăng ký | `5` |
+| `AUTH_TIME_WINDOW` | Cửa sổ giới hạn cho đăng nhập/đăng ký, tính bằng giây | `60` |
 | `TRUSTED_X_FOR_COUNT` | Số proxy đáng tin cậy dùng để xử lý `X-Forwarded-For` | `0` |
 | `TRUSTED_X_PROTO_COUNT` | Số proxy đáng tin cậy dùng để xử lý `X-Forwarded-Proto` | `0` |
 | `PORT` | Cổng chạy Flask | `8081` |
@@ -177,7 +181,7 @@ Backend tại `BACKEND_URL` cần đang chạy và cung cấp endpoint tương �
 
 ### 3. Kiểm tra Rate Limiting
 
-Mặc định, mỗi IP được phép tối đa 5 request trong cửa sổ 10 giây. Có thể gửi 6 request liên tiếp:
+API thông thường mặc định cho phép tối đa 60 request trong 10 giây. Để kiểm tra quota chung, tạm thời đặt `$env:MAX_REQUESTS = "5"` và `$env:TIME_WINDOW = "10"`, sau đó gửi 6 request liên tiếp:
 
 ```powershell
 1..6 | ForEach-Object {
@@ -185,7 +189,7 @@ Mặc định, mỗi IP được phép tối đa 5 request trong cửa sổ 10 g
 }
 ```
 
-Khi vượt giới hạn, middleware trả HTTP `429 Too Many Requests` và header `Retry-After`. Các request vẫn cần đi qua bước kiểm tra Redis trước khi được chuyển tiếp.
+Khi vượt quota, middleware trả HTTP `429 Too Many Requests` và header `Retry-After`. Riêng `POST /api/auth/login` và `POST /api/auth/register` còn chịu quota riêng mặc định 5 request trong 60 giây cho từng endpoint, độc lập với quota chung. Các request vẫn cần đi qua bước kiểm tra Redis trước khi được chuyển tiếp.
 
 Kết quả kiểm thử còn phụ thuộc backend đang chạy và trạng thái bộ đếm hiện có. Chờ hết cửa sổ TTL hoặc xóa key kiểm thử phù hợp trước khi chạy lại.
 
@@ -230,10 +234,20 @@ Nếu Redis chạy trong Docker, có thể dùng `docker exec flask-security-red
 
 Mã HTTP cuối cùng của request được chuyển tiếp có thể là mã do backend trả về.
 
+## Kiểm thử chính sách rate limit
+
+Sau khi cài dependencies trong môi trường ảo, chạy từ thư mục chứa `app.py`:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Các bài test dùng mock Redis và backend để kiểm tra: quota chung cho API, quota đăng nhập, quota đăng ký độc lập và header `Retry-After`. Bài test không thay thế việc kiểm thử tích hợp với Redis/ASP.NET API thật.
+
 ## Giới hạn và lưu ý bảo mật
 
 - Đây là project học tập, không phải API Gateway hoàn chỉnh đã được kiểm định bảo mật.
-- Rate Limiting hiện dựa trên IP, không dựa trên tài khoản, API key hoặc danh tính người dùng.
+- Rate Limiting hiện dựa trên IP, không dựa trên tài khoản, API key hoặc danh tính người dùng. Giới hạn đăng nhập riêng chưa chống được việc phân tán thử mật khẩu từ nhiều IP khác nhau.
 - SHA-256 được dùng để tạo Redis key và nhận diện IP trong blacklist; điều này không tự động bảo đảm dữ liệu đã ẩn danh hoặc đáp ứng GDPR.
 - CORS là chính sách của trình duyệt, không phải cơ chế xác thực client và không ngăn được mọi request trực tiếp đến API.
 - Code hiện tại chưa triển khai Authentication/Authorization, JWT hoặc phân quyền người dùng.

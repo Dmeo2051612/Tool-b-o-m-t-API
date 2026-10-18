@@ -58,8 +58,10 @@ redis_client = redis.Redis.from_url(
     max_connections=50
 )
 
-MAX_REQUESTS = max(1, int(os.getenv("MAX_REQUESTS", "5")))
+MAX_REQUESTS = max(1, int(os.getenv("MAX_REQUESTS", "60")))
 TIME_WINDOW = max(1, int(os.getenv("TIME_WINDOW", "10")))
+AUTH_MAX_REQUESTS = max(1, int(os.getenv("AUTH_MAX_REQUESTS", "5")))
+AUTH_TIME_WINDOW = max(1, int(os.getenv("AUTH_TIME_WINDOW", "60")))
 PORT = int(os.getenv("PORT", "8081"))
 
 API_METHODS = [
@@ -192,22 +194,24 @@ def get_client_ip():
         return None
 
 
-def apply_rate_limit(client_ip):
-    redis_key = f"rate_limit:ip:{hash_ip(client_ip)}"
+def apply_rate_limit_for_scope(client_ip, scope, max_requests, time_window):
+    """Giới hạn request theo IP và phạm vi để các nhóm endpoint không dùng chung quota."""
+    redis_key = f"rate_limit:{scope}:{hash_ip(client_ip)}"
 
     result = RATE_LIMIT_SCRIPT(
         keys=[redis_key],
-        args=[TIME_WINDOW]
+        args=[time_window]
     )
 
     current_count = int(result[0])
     ttl = int(result[1])
 
-    if current_count > MAX_REQUESTS:
+    if current_count > max_requests:
         retry_after = max(ttl, 1)
 
         response = jsonify({
             "error": "Too many requests.",
+            "scope": scope,
             "retry_after_seconds": retry_after
         })
 
@@ -215,6 +219,35 @@ def apply_rate_limit(client_ip):
         response.headers["Retry-After"] = str(retry_after)
 
         return response
+
+    return None
+
+
+def apply_rate_limit(client_ip):
+    # Quota chung đủ rộng cho frontend tải dashboard qua nhiều endpoint.
+    response = apply_rate_limit_for_scope(
+        client_ip,
+        "ip",
+        MAX_REQUESTS,
+        TIME_WINDOW
+    )
+    if response is not None:
+        return response
+
+    # Đặt giới hạn riêng cho đăng nhập/đăng ký để giảm thử mật khẩu hàng loạt.
+    if request.method == "POST":
+        auth_scopes = {
+            "/api/auth/login": "auth-login",
+            "/api/auth/register": "auth-register"
+        }
+        scope = auth_scopes.get(request.path.rstrip("/"))
+        if scope:
+            return apply_rate_limit_for_scope(
+                client_ip,
+                scope,
+                AUTH_MAX_REQUESTS,
+                AUTH_TIME_WINDOW
+            )
 
     return None
 

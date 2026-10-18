@@ -1,0 +1,27 @@
+FINORA / FLASK API GATEWAY — CẬP NHẬT RATE LIMITING
+
+Vì sao cần thay đổi?
+Frontend Finora gọi nhiều API khi đăng nhập và tải dashboard. Giới hạn chung 5 request / 10 giây khiến chính luồng sử dụng bình thường có thể bị HTTP 429. Bản cập nhật dùng quota chung 60 request / 10 giây và quota riêng 5 request / 60 giây cho mỗi endpoint đăng nhập/đăng ký.
+
+Thay file
+1. Sao lưu app.py hiện tại.
+2. Chép app.py từ gói này vào thư mục Gateway đang chạy (thư mục Tool sec của bạn).
+3. Có thể cập nhật README.md cùng thư mục từ gói này; không cần thay requirements.txt.
+4. Mở terminal chạy Gateway, kiểm tra biến môi trường MAX_REQUESTS. Nếu đang còn đặt bằng 5, sửa thành 60 hoặc bỏ biến đó để dùng mặc định mới.
+5. Khởi động lại Flask Gateway.
+
+PowerShell local gợi ý:
+$env:MAX_REQUESTS = "60"
+$env:TIME_WINDOW = "10"
+$env:AUTH_MAX_REQUESTS = "5"
+$env:AUTH_TIME_WINDOW = "60"
+python app.py
+
+Kiểm tra
+- Đăng nhập Finora rồi quan sát Network: tải dashboard bình thường không nên bị 429 do quota chung ở mức cũ.
+- Gửi nhanh nhiều request POST /api/auth/login và kiểm tra sau 5 request trong 60 giây endpoint này trả 429 cùng Retry-After.
+- Khi triển khai production, vẫn cần điều chỉnh quota theo tải thực tế; đây không phải thay thế WAF/DDoS protection.
+
+Giới hạn kiểm thử trong môi trường biên soạn:
+- Đã kiểm tra cú pháp bằng py_compile.
+- Chưa thực hiện integration test với Redis đang chạy, ASP.NET API và browser trên máy của bạn.
