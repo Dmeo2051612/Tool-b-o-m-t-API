@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+finora_user_b_transfer_isolation_state.json
+finora_user_b_transfer_isolation_state.tmp
