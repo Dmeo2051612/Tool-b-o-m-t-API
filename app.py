@@ -271,22 +271,41 @@ def security_middleware():
         origin = request.headers.get("Origin")
         referer = request.headers.get("Referer")
 
-        source_origin = None
+        # Kiểm tra Origin nếu header được gửi lên.
+        if origin is not None:
+            origin_value = normalize_origin(origin)
 
-        if origin:
-            source_origin = normalize_origin(origin)
-        elif referer:
-            parsed_referer = urlsplit(referer)
-            source_origin = normalize_origin(
-                f"{parsed_referer.scheme}://{parsed_referer.netloc}"
-            )
+            if origin_value not in ALLOWED_ORIGINS:
+                return jsonify({
+                    "error": "Nguồn request không được phép."
+                }), 403
 
-        # Nếu có thông tin nguồn, nguồn đó phải được cho phép.
-        # Không chặn client không phải trình duyệt chỉ vì thiếu header.
-        if (origin or referer) and source_origin not in ALLOWED_ORIGINS:
-            return jsonify({
-                "error": "Nguồn request không được phép."
-            }), 403
+        # Kiểm tra Referer độc lập với Origin.
+        if referer is not None:
+            try:
+                parsed_referer = urlsplit(referer)
+
+                if (
+                    parsed_referer.scheme
+                    and parsed_referer.netloc
+                ):
+                    referer_value = normalize_origin(
+                        f"{parsed_referer.scheme}://"
+                        f"{parsed_referer.netloc}"
+                    )
+                else:
+                    referer_value = None
+
+            except ValueError:
+                referer_value = None
+
+            if referer_value not in ALLOWED_ORIGINS:
+                return jsonify({
+                    "error": "Nguồn request không được phép."
+                }), 403
+
+        # Không chặn client không phải trình duyệt
+        # chỉ vì không gửi Origin hoặc Referer.
 
     client_ip = get_client_ip()
 
