@@ -257,56 +257,13 @@ def security_middleware():
     if request.path == "/healthz":
         return None
 
-    if request.method == "OPTIONS":
-        return Response(status=204)
-
     if not (
         request.path == "/api"
         or request.path.startswith("/api/")
     ):
         return None
 
-    # Kiểm tra nguồn gửi request thay đổi dữ liệu.
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        origin = request.headers.get("Origin")
-        referer = request.headers.get("Referer")
-
-        # Kiểm tra Origin nếu header được gửi lên.
-        if origin is not None:
-            origin_value = normalize_origin(origin)
-
-            if origin_value not in ALLOWED_ORIGINS:
-                return jsonify({
-                    "error": "Nguồn request không được phép."
-                }), 403
-
-        # Kiểm tra Referer độc lập với Origin.
-        if referer is not None:
-            try:
-                parsed_referer = urlsplit(referer)
-
-                if (
-                    parsed_referer.scheme
-                    and parsed_referer.netloc
-                ):
-                    referer_value = normalize_origin(
-                        f"{parsed_referer.scheme}://"
-                        f"{parsed_referer.netloc}"
-                    )
-                else:
-                    referer_value = None
-
-            except ValueError:
-                referer_value = None
-
-            if referer_value not in ALLOWED_ORIGINS:
-                return jsonify({
-                    "error": "Nguồn request không được phép."
-                }), 403
-
-        # Không chặn client không phải trình duyệt
-        # chỉ vì không gửi Origin hoặc Referer.
-
+    # 1. Xác định IP client.
     client_ip = get_client_ip()
 
     if client_ip is None:
@@ -314,6 +271,7 @@ def security_middleware():
             "error": "Không xác định được địa chỉ client."
         }), 400
 
+    # 2. Kiểm tra blacklist và Rate Limiting.
     try:
         if redis_client.sismember(
             "blacklist_ips", hash_ip(client_ip)
@@ -336,6 +294,46 @@ def security_middleware():
         return jsonify({
             "error": "Dịch vụ bảo vệ hiện không khả dụng."
         }), 503
+
+    # 3. Xử lý CORS preflight sau các bước bảo vệ.
+    if request.method == "OPTIONS":
+        return Response(status=204)
+
+    # 4. Kiểm tra nguồn của request thay đổi dữ liệu.
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("Origin")
+        referer = request.headers.get("Referer")
+
+        if origin is not None:
+            origin_value = normalize_origin(origin)
+
+            if origin_value not in ALLOWED_ORIGINS:
+                return jsonify({
+                    "error": "Nguồn request không được phép."
+                }), 403
+
+        if referer is not None:
+            try:
+                parsed_referer = urlsplit(referer)
+
+                if (
+                    parsed_referer.scheme
+                    and parsed_referer.netloc
+                ):
+                    referer_value = normalize_origin(
+                        f"{parsed_referer.scheme}://"
+                        f"{parsed_referer.netloc}"
+                    )
+                else:
+                    referer_value = None
+
+            except ValueError:
+                referer_value = None
+
+            if referer_value not in ALLOWED_ORIGINS:
+                return jsonify({
+                    "error": "Nguồn request không được phép."
+                }), 403
 
     return None
 
