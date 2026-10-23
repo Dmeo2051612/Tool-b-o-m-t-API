@@ -100,6 +100,9 @@ class SecurityMiddlewareTests(unittest.TestCase):
             json={},
         )
         self.assertEqual(response.status_code, 403)
+        # Rate limiting should execute before Origin validation.
+        self.mock_sismember.assert_called_once()
+        self.mock_rate_limit.assert_called_once()
         self.mock_backend.assert_not_called()
 
     def test_bad_referer_is_rejected_before_backend(self):
@@ -112,6 +115,9 @@ class SecurityMiddlewareTests(unittest.TestCase):
             json={},
         )
         self.assertEqual(response.status_code, 403)
+        # Rate limiting should execute before Referer validation.
+        self.mock_sismember.assert_called_once()
+        self.mock_rate_limit.assert_called_once()
         self.mock_backend.assert_not_called()
 
     def test_good_origin_does_not_override_bad_referer(self):
@@ -170,6 +176,49 @@ class SecurityMiddlewareTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.mock_backend.assert_called_once()
+
+    def test_rate_limit_precedes_origin_validation(self):
+        gateway_response = gateway.app.response_class(
+            '{"error":"Too many requests."}',
+            status=429,
+            mimetype="application/json",
+        )
+        self.mock_rate_limit.return_value = gateway_response
+
+        response = self.client.post(
+            API_PATH,
+            headers={"Origin": BAD_ORIGIN, "Content-Type": "application/json"},
+            json={},
+        )
+
+        # 429 proves Rate Limiting ran before the bad Origin could return 403.
+        self.assertEqual(response.status_code, 429)
+        self.mock_sismember.assert_called_once()
+        self.mock_rate_limit.assert_called_once()
+        self.mock_backend.assert_not_called()
+
+    def test_rate_limit_precedes_referer_validation(self):
+        gateway_response = gateway.app.response_class(
+            '{"error":"Too many requests."}',
+            status=429,
+            mimetype="application/json",
+        )
+        self.mock_rate_limit.return_value = gateway_response
+
+        response = self.client.post(
+            API_PATH,
+            headers={
+                "Referer": "https://evil.example/page",
+                "Content-Type": "application/json",
+            },
+            json={},
+        )
+
+        # 429 proves Rate Limiting ran before the bad Referer could return 403.
+        self.assertEqual(response.status_code, 429)
+        self.mock_sismember.assert_called_once()
+        self.mock_rate_limit.assert_called_once()
+        self.mock_backend.assert_not_called()
 
     def test_blacklisted_ip_is_rejected(self):
         self.mock_sismember.return_value = True

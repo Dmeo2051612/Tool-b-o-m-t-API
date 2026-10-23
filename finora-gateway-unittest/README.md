@@ -4,7 +4,7 @@ These tests cover the existing Flask gateway middleware using Flask's test clien
 
 ## Where to put the test
 
-Copy `test_security_middleware.py` into the same folder as the gateway's `app.py` (for example, `D:\UTE\GIT\Tool sec`). Do not copy it into the Finora application repository unless you specifically want to version-control gateway tests there.
+Copy/overwrite `test_security_middleware.py` into the same folder as the gateway's `app.py` (for example, `D:\UTE\GIT\Tool sec`). This v2 test suite adds explicit assertions for middleware order. Do not copy it into the Finora application repository unless you specifically want to version-control gateway tests there.
 
 ## Run
 
@@ -25,6 +25,7 @@ The Python environment must already have the same runtime dependencies as `app.p
 - allowed sources continue to backend authentication; missing source headers are not blocked by this middleware
 - Redis IP blacklist
 - Rate Limit response including `Retry-After`
+- Explicit order checks: Rate Limiting executes before CORS preflight and before Origin/Referer validation
 - fail-closed behavior when Redis raises an error
 - security headers on rejection responses
 - `/healthz` response
