@@ -1,4 +1,4 @@
-"""Unit tests for the local Finora Flask gateway middleware.
+﻿"""Unit tests for the local Finora Flask gateway middleware.
 
 Run from the directory that contains app.py:
     python -m unittest -v test_security_middleware
@@ -7,8 +7,13 @@ All Redis and backend calls are mocked; these tests do not contact the real
 Redis server, C# API, or MySQL database.
 """
 from types import SimpleNamespace
+import os
 import unittest
 from unittest.mock import Mock, patch
+
+# Test the documented local-gateway configuration: no trusted reverse proxy.
+os.environ["TRUSTED_X_FOR_COUNT"] = "0"
+os.environ["TRUSTED_X_PROTO_COUNT"] = "0"
 
 import app as gateway
 
@@ -219,6 +224,31 @@ class SecurityMiddlewareTests(unittest.TestCase):
         self.mock_sismember.assert_called_once()
         self.mock_rate_limit.assert_called_once()
         self.mock_backend.assert_not_called()
+
+    def test_client_supplied_x_forwarded_for_is_overwritten(self):
+        spoofed_ip = "203.0.113.77"
+        response = self.client.get(
+            API_PATH,
+            headers={"X-Forwarded-For": spoofed_ip},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        forwarded_headers = self.mock_backend.call_args.kwargs["headers"]
+        self.assertEqual(forwarded_headers.get("X-Forwarded-For"), "127.0.0.1")
+        self.assertNotEqual(
+            forwarded_headers.get("X-Forwarded-For"), spoofed_ip
+        )
+
+    def test_client_supplied_x_forwarded_proto_is_overwritten(self):
+        response = self.client.get(
+            API_PATH,
+            headers={"X-Forwarded-Proto": "https"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        forwarded_headers = self.mock_backend.call_args.kwargs["headers"]
+        self.assertEqual(forwarded_headers.get("X-Forwarded-Proto"), "http")
+        self.assertNotIn("Strict-Transport-Security", response.headers)
 
     def test_blacklisted_ip_is_rejected(self):
         self.mock_sismember.return_value = True
