@@ -299,5 +299,98 @@ class SecurityMiddlewareTests(unittest.TestCase):
         self.mock_backend.assert_not_called()
 
 
+    def test_invalid_client_ip_is_rejected_before_redis(self):
+        response = self.client.get(
+            API_PATH,
+            environ_overrides={"REMOTE_ADDR": "not-an-ip"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.mock_sismember.assert_not_called()
+        self.mock_rate_limit.assert_not_called()
+        self.mock_backend.assert_not_called()
+
+    def test_backend_timeout_returns_504(self):
+        self.mock_backend.side_effect = gateway.requests.Timeout("test timeout")
+        response = self.client.get(API_PATH)
+        self.assertEqual(response.status_code, 504)
+        self.assertEqual(
+            response.get_json(),
+            {"error": "Backend không phản hồi kịp thời."},
+        )
+
+    def test_backend_connection_error_returns_502(self):
+        self.mock_backend.side_effect = gateway.requests.ConnectionError(
+            "test connection failure"
+        )
+        response = self.client.get(API_PATH)
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(
+            response.get_json(),
+            {"error": "Không thể kết nối tới backend."},
+        )
+
+    def test_client_hop_by_hop_and_forwarded_headers_are_not_forwarded(self):
+        response = self.client.get(
+            API_PATH,
+            headers={
+                "Connection": "X-Internal-Token",
+                "X-Internal-Token": "do-not-forward",
+                "X-Forwarded-Host": "evil.example",
+                "X-Forwarded-Port": "9999",
+                "X-Forwarded-For": "203.0.113.77",
+            },
+        )
+        self.assertEqual(response.status_code, 401)
+        forwarded = self.mock_backend.call_args.kwargs["headers"]
+        lowered = {name.lower(): value for name, value in forwarded.items()}
+        self.assertNotIn("x-internal-token", lowered)
+        self.assertNotIn("x-forwarded-host", lowered)
+        self.assertNotIn("x-forwarded-port", lowered)
+        self.assertEqual(lowered.get("x-forwarded-for"), "127.0.0.1")
+
+    def test_hop_by_hop_and_cors_headers_from_backend_are_filtered(self):
+        self.mock_backend.return_value = SimpleNamespace(
+            content=b"ok",
+            status_code=200,
+            headers={
+                "Connection": "keep-alive",
+                "Transfer-Encoding": "chunked",
+                "Content-Encoding": "gzip",
+                "Access-Control-Allow-Origin": BAD_ORIGIN,
+                "X-Upstream-Test": "preserved",
+            },
+        )
+        response = self.client.get(
+            API_PATH, headers={"Origin": ALLOWED_ORIGIN}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("X-Upstream-Test"), "preserved")
+        self.assertNotIn("Connection", response.headers)
+        self.assertNotIn("Transfer-Encoding", response.headers)
+        self.assertNotIn("Content-Encoding", response.headers)
+        # The untrusted upstream CORS header must be filtered. Flask-CORS may
+        # then add the configured allowlisted origin to the final response.
+        self.assertEqual(
+            response.headers.get("Access-Control-Allow-Origin"), ALLOWED_ORIGIN
+        )
+        self.assertNotEqual(
+            response.headers.get("Access-Control-Allow-Origin"), BAD_ORIGIN
+        )
+
+    def test_healthcheck_returns_503_when_redis_ping_fails(self):
+        with patch.object(
+            gateway.redis_client,
+            "ping",
+            side_effect=gateway.redis.RedisError("test ping failure"),
+        ):
+            response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.get_json(),
+            {"status": "degraded", "redis": "unavailable"},
+        )
+        self.mock_backend.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
