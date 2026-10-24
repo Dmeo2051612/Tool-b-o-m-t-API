@@ -14,10 +14,16 @@ from unittest.mock import Mock, patch
 # Test the documented local-gateway configuration: no trusted reverse proxy.
 os.environ["TRUSTED_X_FOR_COUNT"] = "0"
 os.environ["TRUSTED_X_PROTO_COUNT"] = "0"
+# Configure multiple allowed origins so the suite can verify Origin variation
+# and the corresponding Vary response header behavior.
+os.environ["ALLOWED_ORIGINS"] = (
+    "http://localhost:8080,http://127.0.0.1:8080"
+)
 
 import app as gateway
 
 ALLOWED_ORIGIN = "http://localhost:8080"
+SECOND_ALLOWED_ORIGIN = "http://127.0.0.1:8080"
 BAD_ORIGIN = "https://evil.example"
 API_PATH = "/api/chuyen-khoan"
 
@@ -69,6 +75,44 @@ class SecurityMiddlewareTests(unittest.TestCase):
         for header in ("content-type", "authorization", "idempotency-key"):
             self.assertIn(header, allowed_headers)
         self.mock_backend.assert_not_called()
+
+    def test_second_allowed_origin_is_echoed_exactly(self):
+        response = self.client.options(
+            API_PATH,
+            headers={
+                "Origin": SECOND_ALLOWED_ORIGIN,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,authorization",
+            },
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(
+            response.headers.get("Access-Control-Allow-Origin"),
+            SECOND_ALLOWED_ORIGIN,
+        )
+
+    def test_cors_varies_origin_for_multiple_allowed_origins(self):
+        for origin in (ALLOWED_ORIGIN, SECOND_ALLOWED_ORIGIN):
+            with self.subTest(origin=origin):
+                response = self.client.get(API_PATH, headers={"Origin": origin})
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(
+                    response.headers.get("Access-Control-Allow-Origin"),
+                    origin,
+                )
+                vary_values = {
+                    part.strip().lower()
+                    for part in response.headers.get("Vary", "").split(",")
+                    if part.strip()
+                }
+                self.assertIn("origin", vary_values)
+
+    def test_disallowed_origin_never_receives_allow_origin_header(self):
+        response = self.client.get(API_PATH, headers={"Origin": BAD_ORIGIN})
+        self.assertEqual(response.status_code, 401)
+        self.assertNotEqual(
+            response.headers.get("Access-Control-Allow-Origin"), BAD_ORIGIN
+        )
 
     def test_disallowed_origin_preflight_has_no_cors_permission(self):
         response = self.client.options(
