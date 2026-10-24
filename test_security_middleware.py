@@ -7,6 +7,7 @@ All Redis and backend calls are mocked; these tests do not contact the real
 Redis server, C# API, or MySQL database.
 """
 from types import SimpleNamespace
+import json
 import os
 import unittest
 from unittest.mock import Mock, patch
@@ -535,6 +536,66 @@ class SecurityMiddlewareTests(unittest.TestCase):
         self.assertEqual(
             forwarded_headers.get("X-Forwarded-Proto"), "https"
         )
+
+
+    def test_query_string_is_forwarded_to_backend_unchanged(self):
+        response = self.client.get(f"{API_PATH}?page=2&sort=desc")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            self.mock_backend.call_args.kwargs["url"],
+            f"{gateway.BACKEND_URL}{API_PATH}?page=2&sort=desc",
+        )
+
+    def test_authorization_header_is_forwarded_to_backend(self):
+        authorization = "Bearer unit-test-token"
+        response = self.client.get(
+            API_PATH,
+            headers={"Authorization": authorization},
+        )
+        self.assertEqual(response.status_code, 401)
+        forwarded_headers = self.mock_backend.call_args.kwargs["headers"]
+        self.assertEqual(forwarded_headers.get("Authorization"), authorization)
+
+    def test_json_body_and_idempotency_key_are_forwarded(self):
+        payload = {
+            "tkNguonId": 7,
+            "tkDichId": 6,
+            "soTien": 1.00,
+            "moTa": "middleware unit test",
+        }
+        idempotency_key = "unit-test-idempotency-key"
+        response = self.client.post(
+            API_PATH,
+            headers={
+                "Origin": ALLOWED_ORIGIN,
+                "Idempotency-Key": idempotency_key,
+            },
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 401)
+        call = self.mock_backend.call_args.kwargs
+        forwarded_headers = call["headers"]
+        self.assertEqual(json.loads(call["data"].decode("utf-8")), payload)
+        self.assertEqual(
+            forwarded_headers.get("Idempotency-Key"), idempotency_key
+        )
+        self.assertEqual(
+            forwarded_headers.get("Content-Type"), "application/json"
+        )
+
+    def test_backend_redirect_is_not_followed_automatically(self):
+        self.mock_backend.return_value = SimpleNamespace(
+            content=b"",
+            status_code=302,
+            headers={"Location": "https://example.test/login"},
+        )
+        response = self.client.get(API_PATH)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.headers.get("Location"), "https://example.test/login"
+        )
+        self.assertFalse(self.mock_backend.call_args.kwargs["allow_redirects"])
+        self.mock_backend.assert_called_once()
 
 
 if __name__ == "__main__":
