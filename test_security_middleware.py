@@ -496,5 +496,46 @@ class SecurityMiddlewareTests(unittest.TestCase):
                 self.assertIsNone(gateway.normalize_origin(value))
 
 
+    def test_get_with_bad_referer_continues_to_backend_auth(self):
+        response = self.client.get(
+            API_PATH,
+            headers={"Referer": "https://evil.example/page"},
+        )
+        # Origin/Referer enforcement is for state-changing methods only.
+        # Backend authentication still protects a read request.
+        self.assertEqual(response.status_code, 401)
+        self.mock_backend.assert_called_once()
+
+    def test_empty_origin_is_rejected(self):
+        response = self.client.post(
+            API_PATH,
+            headers={"Origin": "", "Content-Type": "application/json"},
+            json={},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.mock_backend.assert_not_called()
+
+    def test_empty_referer_is_rejected(self):
+        response = self.client.post(
+            API_PATH,
+            headers={"Referer": "", "Content-Type": "application/json"},
+            json={},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.mock_backend.assert_not_called()
+
+    def test_hsts_is_added_for_https_request(self):
+        response = self.client.get(API_PATH, base_url="https://localhost")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.headers.get("Strict-Transport-Security"),
+            "max-age=31536000",
+        )
+        forwarded_headers = self.mock_backend.call_args.kwargs["headers"]
+        self.assertEqual(
+            forwarded_headers.get("X-Forwarded-Proto"), "https"
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
