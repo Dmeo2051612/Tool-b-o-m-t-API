@@ -1,4 +1,4 @@
-"""Unit tests for the local Finora Flask gateway middleware.
+﻿"""Unit tests for the local Finora Flask gateway middleware.
 
 Run from the directory that contains app.py:
     python -m unittest -v test_security_middleware
@@ -467,6 +467,33 @@ class SecurityMiddlewareTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(gateway.normalize_origin(value))
 
+
+
+    def test_normalize_origin_trims_surrounding_whitespace(self):
+        self.assertEqual(
+            gateway.normalize_origin("  HTTP://LOCALHOST:8080  "),
+            "http://localhost:8080",
+        )
+
+    def test_normalize_origin_handles_ipv6_literals(self):
+        self.assertEqual(
+            gateway.normalize_origin("http://[::1]:80"),
+            "http://[::1]",
+        )
+        self.assertEqual(
+            gateway.normalize_origin("https://[2001:DB8::1]:8443"),
+            "https://[2001:db8::1]:8443",
+        )
+
+    def test_normalize_origin_rejects_malformed_ipv6_and_out_of_range_port(self):
+        invalid_values = (
+            "http://[:::1]:8080",
+            "http://localhost:65536",
+            "https://[2001:db8::1]:99999",
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                self.assertIsNone(gateway.normalize_origin(value))
 
 
 if __name__ == "__main__":
