@@ -1,4 +1,4 @@
-﻿"""Unit tests for the local Finora Flask gateway middleware.
+"""Unit tests for the local Finora Flask gateway middleware.
 
 Run from the directory that contains app.py:
     python -m unittest -v test_security_middleware
@@ -434,6 +434,39 @@ class SecurityMiddlewareTests(unittest.TestCase):
             {"status": "degraded", "redis": "unavailable"},
         )
         self.mock_backend.assert_not_called()
+
+
+    def test_normalize_origin_lowercases_scheme_and_host(self):
+        self.assertEqual(
+            gateway.normalize_origin("HTTP://LOCALHOST:8080"),
+            "http://localhost:8080",
+        )
+        self.assertEqual(
+            gateway.normalize_origin("HtTpS://Example.COM"),
+            "https://example.com",
+        )
+
+    def test_normalize_origin_removes_default_ports(self):
+        self.assertEqual(
+            gateway.normalize_origin("http://localhost:80"),
+            "http://localhost",
+        )
+        self.assertEqual(
+            gateway.normalize_origin("https://example.com:443"),
+            "https://example.com",
+        )
+
+    def test_normalize_origin_rejects_userinfo_query_fragment_and_invalid_port(self):
+        invalid_values = (
+            "http://user:pass@localhost:8080",
+            "http://localhost:8080?x=1",
+            "http://localhost:8080#fragment",
+            "http://localhost:not-a-port",
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                self.assertIsNone(gateway.normalize_origin(value))
+
 
 
 if __name__ == "__main__":
