@@ -81,6 +81,8 @@ HOP_BY_HOP_HEADERS = {
 }
 
 RESPONSE_EXCLUDED_HEADERS = HOP_BY_HOP_HEADERS | {
+    "server",
+    "date",
     "content-length",
     "content-encoding",
     "access-control-allow-origin",

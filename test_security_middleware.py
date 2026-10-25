@@ -422,6 +422,24 @@ class SecurityMiddlewareTests(unittest.TestCase):
             response.headers.get("Access-Control-Allow-Origin"), BAD_ORIGIN
         )
 
+    def test_server_and_date_headers_from_backend_are_filtered(self):
+        self.mock_backend.return_value = SimpleNamespace(
+            content=b"ok",
+            status_code=200,
+            headers={
+                "Server": "Kestrel",
+                "Date": "Sun, 25 Oct 2026 01:36:57 GMT",
+                "X-Upstream-Test": "preserved",
+            },
+        )
+
+        response = self.client.get(API_PATH)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Server", response.headers)
+        self.assertNotIn("Date", response.headers)
+        self.assertEqual(response.headers.get("X-Upstream-Test"), "preserved")
+
     def test_healthcheck_returns_503_when_redis_ping_fails(self):
         with patch.object(
             gateway.redis_client,
