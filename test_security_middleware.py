@@ -598,5 +598,82 @@ class SecurityMiddlewareTests(unittest.TestCase):
         self.mock_backend.assert_called_once()
 
 
+    def test_put_patch_delete_with_bad_origin_are_rejected(self):
+        for method in ("PUT", "PATCH", "DELETE"):
+            with self.subTest(method=method):
+                response = self.client.open(
+                    API_PATH,
+                    method=method,
+                    headers={
+                        "Origin": BAD_ORIGIN,
+                        "Content-Type": "application/json",
+                    },
+                    json={},
+                )
+                self.assertEqual(response.status_code, 403)
+        self.mock_backend.assert_not_called()
+
+    def test_put_patch_delete_methods_are_forwarded(self):
+        for method in ("PUT", "PATCH", "DELETE"):
+            with self.subTest(method=method):
+                response = self.client.open(
+                    API_PATH,
+                    method=method,
+                    headers={
+                        "Origin": ALLOWED_ORIGIN,
+                        "Content-Type": "application/json",
+                    },
+                    json={"test": True},
+                )
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(
+                    self.mock_backend.call_args.kwargs["method"], method
+                )
+        self.assertEqual(self.mock_backend.call_count, 3)
+
+    def test_get_with_bad_origin_continues_to_backend_auth(self):
+        response = self.client.get(
+            API_PATH,
+            headers={"Origin": BAD_ORIGIN},
+        )
+        # Origin enforcement is only applied to state-changing methods.
+        # CORS still must not grant the disallowed origin browser access.
+        self.assertEqual(response.status_code, 401)
+        self.assertNotEqual(
+            response.headers.get("Access-Control-Allow-Origin"), BAD_ORIGIN
+        )
+        self.mock_backend.assert_called_once()
+
+    def test_healthcheck_bypasses_api_rate_limit_and_blacklist_checks(self):
+        with patch.object(gateway.redis_client, "ping", return_value=True):
+            response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        self.mock_sismember.assert_not_called()
+        self.mock_rate_limit.assert_not_called()
+        self.mock_backend.assert_not_called()
+
+    def test_non_api_path_does_not_access_redis_or_backend(self):
+        response = self.client.get("/favicon.ico")
+        self.assertEqual(response.status_code, 404)
+        self.mock_sismember.assert_not_called()
+        self.mock_rate_limit.assert_not_called()
+        self.mock_backend.assert_not_called()
+
+    def test_backend_status_and_json_body_are_preserved(self):
+        body = b'{"error":"conflict","code":"TEST_CONFLICT"}'
+        self.mock_backend.return_value = SimpleNamespace(
+            content=body,
+            status_code=409,
+            headers={"Content-Type": "application/json"},
+        )
+        response = self.client.get(API_PATH)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data, body)
+        self.assertEqual(response.get_json(), {
+            "error": "conflict",
+            "code": "TEST_CONFLICT",
+        })
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
