@@ -3,3 +3,4 @@ Flask-Cors==6.0.5
 redis==8.1.0
 Werkzeug==3.1.9
 requests==2.32.5
+waitress>=3.0,<4
